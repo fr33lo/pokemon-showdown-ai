@@ -24,7 +24,7 @@ built this because I wanted to see how far you can push an AI agent in competiti
 **clone and go**
 ```powershell
 # clone the repo
-git clone https://github.com/yourusername/pokemon-showdown-ai.git
+git clone https://github.com/fr33lo/pokemon-showdown-ai.git
 cd pokemon-showdown-ai
 
 # install dependencies
@@ -77,7 +77,7 @@ VERBOSE=true           # enables debug logging
 
 ```powershell
 # clone the repo
-git clone https://github.com/yourusername/pokemon-showdown-ai.git
+git clone https://github.com/fr33lo/pokemon-showdown-ai.git
 cd pokemon-showdown-ai
 
 # install deps
@@ -225,6 +225,6 @@ please keep TypeScript strict, add proper types, and follow the existing module 
 
 **© 2025 pokemon-showdown-ai** • built because clicking buttons in a pokemon game is beneath us 🎮
 
-[![GitHub](https://img.shields.io/badge/GitHub-pokemon--showdown--ai-green?style=flat&logo=github)](https://github.com/yourusername/pokemon-showdown-ai)
+[![GitHub](https://img.shields.io/badge/GitHub-pokemon--showdown--ai-green?style=flat&logo=github)](https://github.com/fr33lo/pokemon-showdown-ai)
 
 </div>
