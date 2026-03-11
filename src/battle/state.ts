@@ -387,6 +387,7 @@ export class BattleState {
       side.activePokemon.hpPercent = 0;
       side.activePokemon.fainted = true;
       side.activePokemon.active = false;
+      side.activePokemon = null;
     }
   }
 
@@ -401,6 +402,29 @@ export class BattleState {
       if (cond.status) side.activePokemon.status = cond.status;
       side.activePokemon.fainted = cond.hp === 0;
     }
+
+    // Track [from] source for inference (Life Orb, etc.)
+    const fromArg = args.find(a => a.includes('[from]'));
+    if (fromArg) {
+      const fromMatch = fromArg.match(/\[from\]\s*item:\s*(.+)/i);
+      if (fromMatch) {
+        const itemName = fromMatch[1].trim();
+        if (side.activePokemon) {
+          side.activePokemon.knownItem = itemName;
+        }
+        // Emit for inference tracking
+        this.lastDamageSource = { player, item: itemName };
+      }
+    }
+  }
+
+  /** Last damage source info for inference engine consumption */
+  private lastDamageSource: { player: 'p1' | 'p2'; item: string } | null = null;
+
+  getLastDamageSource(): { player: 'p1' | 'p2'; item: string } | null {
+    const src = this.lastDamageSource;
+    this.lastDamageSource = null;
+    return src;
   }
 
   private handleStatus(args: string[]): void {

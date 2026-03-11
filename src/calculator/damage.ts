@@ -144,9 +144,16 @@ export class DamageCalculator {
 
   private toPokemon(p: PokemonState): Pokemon {
     const species = this.normalizeSpeciesName(p.species);
+    // Use actual HP if known (our side), otherwise estimate from percentage
+    // The calc library needs curHP relative to the Pokemon's calculated maxHP,
+    // so we pass the percentage and let it resolve after construction
+    const estimatedMaxHp = p.maxHp > 0 && p.maxHp !== 100 ? p.maxHp : 0;
+    const curHP = estimatedMaxHp > 0
+      ? p.hp  // actual HP known (our Pokemon)
+      : (p.hpPercent > 0 ? Math.max(1, Math.round(p.hpPercent * 3)) : 0); // estimate for opponent
     const options: any = {
       level: p.level || 80,
-      curHP: p.hpPercent > 0 ? Math.max(1, Math.round(p.hpPercent * 3)) : 0,
+      curHP,
       boosts: {
         atk: p.boosts.atk,
         def: p.boosts.def,
@@ -301,9 +308,13 @@ export class DamageCalculator {
     moveId: string,
     field: FieldState
   ): string {
-    return `${attacker.species}:${attacker.hpPercent.toFixed(0)}:${JSON.stringify(attacker.boosts)}|` +
-      `${defender.species}:${defender.hpPercent.toFixed(0)}:${JSON.stringify(defender.boosts)}|` +
-      `${moveId}|${field.weather}:${field.terrain}`;
+    const atkItem = attacker.knownItem || attacker.item || '';
+    const defItem = defender.knownItem || defender.item || '';
+    const atkAbility = attacker.knownAbility || attacker.ability || '';
+    const defAbility = defender.knownAbility || defender.ability || '';
+    return `${attacker.species}:${atkAbility}:${atkItem}:${attacker.status}:${JSON.stringify(attacker.boosts)}|` +
+      `${defender.species}:${defAbility}:${defItem}:${defender.status}:${defender.hpPercent.toFixed(0)}:${JSON.stringify(defender.boosts)}|` +
+      `${moveId}|${field.weather}:${field.terrain}:${field.trickRoom}`;
   }
 
   private addToCache(key: string, result: DamageResult): void {
