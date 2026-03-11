@@ -70,8 +70,12 @@ class PokemonShowdownAI {
   }
 
   private setupEventHandlers(): void {
-    // Battle started
+    // Battle started — concurrency lock: ignore if already in a battle
     this.client.on('battle-start', (battleId: string) => {
+      if (this.currentBattle) {
+        log(`Already in battle ${this.currentBattle.getBattleId()}, ignoring ${battleId}`);
+        return;
+      }
       log(`Joining battle: ${battleId}`);
       this.client.joinBattle(battleId);
       this.currentBattle = new BattleOrchestrator(

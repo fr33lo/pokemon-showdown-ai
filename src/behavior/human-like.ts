@@ -1,13 +1,17 @@
 import { CONFIG } from '../config';
 import { Decision, MoveInfo } from '../types';
 
+function randomFloat(min: number, max: number): number {
+  return min + Math.random() * (max - min);
+}
+
 function randomBetween(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-/** Delay to simulate human thinking time before making a move */
+/** Delay to simulate human thinking time before making a move (random float each turn) */
 export async function turnDelay(): Promise<void> {
-  const delay = randomBetween(CONFIG.behavior.turnDelayMin, CONFIG.behavior.turnDelayMax);
+  const delay = randomFloat(CONFIG.behavior.turnDelayMin, CONFIG.behavior.turnDelayMax);
   await new Promise(resolve => setTimeout(resolve, delay));
 }
 
@@ -52,10 +56,14 @@ export function maybeImperfectPlay(
   if (decision.type === 'switch' && switchOptions.length > 1) {
     const otherSwitches = switchOptions.filter(s => s !== decision.choice);
     if (otherSwitches.length > 0) {
-      const pick = otherSwitches[Math.floor(Math.random() * otherSwitches.length)];
+      const pickIdx = Math.floor(Math.random() * otherSwitches.length);
+      const pick = otherSwitches[pickIdx];
+      // Compute a valid switchIndex from the original options list (1-based offset in team)
+      const originalIdx = switchOptions.indexOf(pick);
       return {
         ...decision,
         choice: pick,
+        switchIndex: originalIdx !== -1 ? originalIdx + 1 : decision.switchIndex,
         source: 'random',
         confidence: 0,
         reasoning: 'imperfect play injection',

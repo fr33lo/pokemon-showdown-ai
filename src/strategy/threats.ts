@@ -93,11 +93,21 @@ export function evaluateThreats(
     }
     const defensiveWallValue = Math.min(1.0, wallScore);
 
+    // In late game (≤3 Pokemon each), setup sweepers are more dangerous
+    // because there are fewer checks remaining
+    const lateGame = myAlive.length <= 3;
+    const setupWeight = lateGame
+      ? Math.min(weights.setupPotential + 0.10, 0.40)
+      : weights.setupPotential;
+    const dmgWeight = lateGame
+      ? Math.max(weights.damageThreat - 0.05, 0.20)
+      : weights.damageThreat;
+
     // Weighted total
     const score =
       (speedThreat * weights.speedThreat) +
-      (damageThreat * weights.damageThreat) +
-      (setupPotential * weights.setupPotential) +
+      (damageThreat * dmgWeight) +
+      (setupPotential * setupWeight) +
       (defensiveWallValue * weights.defensiveWallValue);
 
     threats.push({

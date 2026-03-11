@@ -35,6 +35,11 @@ export class ShowdownClient extends EventEmitter {
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       log(`Connecting to ${CONFIG.ps.server}...`);
+      // Clean up any existing connection
+      if (this.ws) {
+        try { this.ws.removeAllListeners(); this.ws.close(); } catch { /* ignore */ }
+        this.ws = null;
+      }
       this.ws = new WebSocket(CONFIG.ps.server);
 
       this.ws.on('open', () => {
@@ -71,7 +76,14 @@ export class ShowdownClient extends EventEmitter {
     this.reconnectAttempts++;
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
     log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
-    setTimeout(() => this.connect().catch(() => {}), delay);
+    setTimeout(async () => {
+      try {
+        await this.connectAndLogin();
+        log('Reconnected and logged in successfully');
+      } catch {
+        logError('Reconnection failed');
+      }
+    }, delay);
   }
 
   disconnect(): void {
@@ -118,18 +130,18 @@ export class ShowdownClient extends EventEmitter {
           this.emit('challstr', this.challstr);
           break;
 
-        case 'updateuser':
-          if (parts[1]?.trim().startsWith(' ' + CONFIG.ps.username) ||
-              parts[1]?.trim() === CONFIG.ps.username) {
-            // Check if guest or logged in
-            const isGuest = parts[2]?.trim() === '0';
-            if (!isGuest) {
-              this.loggedIn = true;
-              log(`Logged in as ${parts[1]?.trim()}`);
-              this.emit('login');
-            }
+        case 'updateuser': {
+          const rawName = parts[1]?.trim() || '';
+          // PS may prepend a space or special chars; normalize for comparison
+          const cleanName = rawName.replace(/^[\s\u00a0]+/, '');
+          const isGuest = parts[2]?.trim() === '0';
+          if (!isGuest && cleanName.toLowerCase() === CONFIG.ps.username.toLowerCase()) {
+            this.loggedIn = true;
+            log(`Logged in as ${cleanName}`);
+            this.emit('login');
           }
           break;
+        }
 
         case 'updatesearch':
           // Battle search status update

@@ -24,6 +24,7 @@ const SETUP_MOVES = new Set([
 ]);
 const RECOVERY_MOVES = new Set(['recover', 'roost', 'slackoff', 'softboiled', 'moonlight', 'morningsun', 'synthesis', 'wish', 'rest']);
 const HAZARD_MOVES = new Set(['stealthrock', 'spikes', 'toxicspikes', 'stickyweb']);
+const PIVOT_MOVES = new Set(['uturn', 'voltswitch', 'flipturn', 'partingshot', 'teleport']);
 
 /**
  * Heuristic decision engine.
@@ -52,48 +53,80 @@ export function heuristicDecision(
   }
 
   // ═══════════════════════════════════════
-  // 2. Guaranteed OHKO
+  // 2. Speed check for KO interactions
+  // ═══════════════════════════════════════
+  const oppSideId = state.myPlayer === 'p1' ? 'p2' as const : 'p1' as const;
+  const mySpeed = calc.getEffectiveSpeed(myActive, state.field, state.myPlayer);
+  const oppSpeed = calc.getEffectiveSpeed(oppActive, state.field, oppSideId);
+  const iOutspeed = mySpeed > oppSpeed;
+
+  // ═══════════════════════════════════════
+  // 3. Priority KO (always check first — bypasses speed)
+  // ═══════════════════════════════════════
+  const priorityKO = matchup.myAttacking.find(d => d.isOHKO && d.priority > 0);
+  if (priorityKO) {
+    // Also check if opponent has a higher-priority move that can KO us
+    const oppPriorityKO = matchup.oppAttacking.find(d => d.isOHKO && d.priority > 0);
+    const oppOutprioritizes = oppPriorityKO && oppPriorityKO.priority > priorityKO.priority;
+    if (!oppOutprioritizes) {
+      const moveIdx = findMoveIndex(availableMoves, priorityKO.move);
+      if (moveIdx !== -1) {
+        logDebug(`Heuristic: Priority KO with ${priorityKO.move}`);
+        return {
+          type: 'move',
+          choice: priorityKO.move,
+          moveIndex: moveIdx + 1,
+          source: 'heuristic',
+          confidence: 0.93,
+          reasoning: `Priority KO on ${oppActive.name} at ${oppActive.hpPercent.toFixed(0)}%`,
+        };
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════
+  // 4. Guaranteed OHKO (with speed awareness)
   // ═══════════════════════════════════════
   const guaranteedKO = matchup.myAttacking.find(d => d.isOHKO);
   if (guaranteedKO) {
-    const moveIdx = findMoveIndex(availableMoves, guaranteedKO.move);
-    if (moveIdx !== -1) {
-      logDebug(`Heuristic: Guaranteed KO with ${guaranteedKO.move}`);
-      return {
-        type: 'move',
-        choice: guaranteedKO.move,
-        moveIndex: moveIdx + 1,
-        source: 'heuristic',
-        confidence: 0.95,
-        reasoning: `Guaranteed OHKO with ${guaranteedKO.move} (${guaranteedKO.minPercent.toFixed(0)}-${guaranteedKO.maxPercent.toFixed(0)}%)`,
-      };
+    const theyCanKOFirst = !iOutspeed && matchup.oppAttacking.some(d => d.isOHKO);
+    if (!theyCanKOFirst) {
+      // Safe to attack — we outspeed or they can't KO us
+      const moveIdx = findMoveIndex(availableMoves, guaranteedKO.move);
+      if (moveIdx !== -1) {
+        logDebug(`Heuristic: Guaranteed KO with ${guaranteedKO.move}`);
+        return {
+          type: 'move',
+          choice: guaranteedKO.move,
+          moveIndex: moveIdx + 1,
+          source: 'heuristic',
+          confidence: 0.95,
+          reasoning: `Guaranteed OHKO with ${guaranteedKO.move} (${guaranteedKO.minPercent.toFixed(0)}-${guaranteedKO.maxPercent.toFixed(0)}%)`,
+        };
+      }
+    } else {
+      // They outspeed and can KO — use priority if available, otherwise consider switching
+      if (priorityKO) {
+        const moveIdx = findMoveIndex(availableMoves, priorityKO.move);
+        if (moveIdx !== -1) {
+          return {
+            type: 'move',
+            choice: priorityKO.move,
+            moveIndex: moveIdx + 1,
+            source: 'heuristic',
+            confidence: 0.88,
+            reasoning: 'Priority KO — opponent outspeeds and threatens KO',
+          };
+        }
+      }
     }
   }
 
   // ═══════════════════════════════════════
-  // 3. Priority KO (finish low HP opponent)
-  // ═══════════════════════════════════════
-  const priorityKO = matchup.myAttacking.find(d => d.isOHKO && d.priority > 0);
-  if (priorityKO && oppActive.hpPercent <= 30) {
-    const moveIdx = findMoveIndex(availableMoves, priorityKO.move);
-    if (moveIdx !== -1) {
-      logDebug(`Heuristic: Priority finish with ${priorityKO.move}`);
-      return {
-        type: 'move',
-        choice: priorityKO.move,
-        moveIndex: moveIdx + 1,
-        source: 'heuristic',
-        confidence: 0.93,
-        reasoning: `Priority KO on ${oppActive.name} at ${oppActive.hpPercent.toFixed(0)}%`,
-      };
-    }
-  }
-
-  // ═══════════════════════════════════════
-  // 4. We're about to be KO'd — consider switching or priority
+  // 5. We're about to be KO'd — consider switching or priority
   // ═══════════════════════════════════════
   const theyCanKO = matchup.oppAttacking.find(d => d.isOHKO);
-  if (theyCanKO && myActive.hpPercent <= 40) {
+  if (theyCanKO) {
     // Do we have a priority move that can KO them?
     const ourPriorityKO = matchup.myAttacking.find(d => d.isOHKO && d.priority > 0);
     if (ourPriorityKO) {
@@ -122,7 +155,7 @@ export function heuristicDecision(
   }
 
   // ═══════════════════════════════════════
-  // 5. Hazard removal when hazards are up
+  // 6. Hazard removal — only when hazards threaten win conditions
   // ═══════════════════════════════════════
   const myHazards = state.mySide.sideConditions;
   if (myHazards.size > 0) {
@@ -130,17 +163,21 @@ export function heuristicDecision(
     if (removalMove && myActive.hpPercent > 40) {
       // Don't remove hazards if we can KO instead
       if (!guaranteedKO) {
-        const moveIdx = findMoveIndex(availableMoves, removalMove.id);
-        if (moveIdx !== -1) {
-          logDebug(`Heuristic: Hazard removal with ${removalMove.id}`);
-          return {
-            type: 'move',
-            choice: removalMove.id,
-            moveIndex: moveIdx + 1,
-            source: 'heuristic',
-            confidence: 0.75,
-            reasoning: 'Remove hazards',
-          };
+        // Check if hazards actually threaten our win condition or bench Pokemon
+        const hazardsThreatening = hazardsThreatenTeam(state, strategic);
+        if (hazardsThreatening) {
+          const moveIdx = findMoveIndex(availableMoves, removalMove.id);
+          if (moveIdx !== -1) {
+            logDebug(`Heuristic: Hazard removal with ${removalMove.id}`);
+            return {
+              type: 'move',
+              choice: removalMove.id,
+              moveIndex: moveIdx + 1,
+              source: 'heuristic',
+              confidence: 0.75,
+              reasoning: 'Remove hazards threatening win condition',
+            };
+          }
         }
       }
     }
@@ -173,7 +210,7 @@ export function heuristicDecision(
   }
 
   // ═══════════════════════════════════════
-  // 7. Setup opportunity
+  // 7. Setup opportunity (recognizes safe setups: opponent locked, slower, or forced out)
   // ═══════════════════════════════════════
   const setupMove = availableMoves.find(m => SETUP_MOVES.has(toId(m.id)));
   if (setupMove && myActive.hpPercent > 60) {
@@ -181,25 +218,62 @@ export function heuristicDecision(
     const isWinCond = strategic.winConditions.length > 0 &&
       strategic.winConditions[0].pokemon === myActive.name;
 
-    // Safe to set up: opponent can't 2HKO us
-    if (worstOppDmg < 45 && isWinCond) {
+    // Detect safe setup conditions
+    const oppLocked = oppActive.volatiles.has('choicelock') ||
+      oppActive.volatiles.has('mustrecharge') ||
+      oppActive.volatiles.has('twoturnmove');
+    const oppSlower = iOutspeed;
+    const oppCantThreaten = worstOppDmg < 45;
+    const oppLowHp = oppActive.hpPercent < 25;  // They'll likely switch
+    const isSafe = oppCantThreaten || oppLocked || (oppSlower && oppLowHp);
+
+    if (isSafe && isWinCond) {
       const moveIdx = findMoveIndex(availableMoves, setupMove.id);
       if (moveIdx !== -1) {
-        logDebug(`Heuristic: Setup with ${setupMove.id}`);
+        const reason = oppLocked ? 'opponent locked' :
+          oppLowHp ? 'opponent likely switching' :
+          'opponent can\'t threaten';
+        logDebug(`Heuristic: Setup with ${setupMove.id} (${reason})`);
         return {
           type: 'move',
           choice: setupMove.id,
           moveIndex: moveIdx + 1,
           source: 'heuristic',
           confidence: 0.80,
-          reasoning: 'Safe setup opportunity for win condition',
+          reasoning: `Safe setup: ${reason}`,
         };
       }
     }
   }
 
   // ═══════════════════════════════════════
-  // 8. Best available move (high confidence matchup)
+  // 8a. Pivot heuristic — U-turn / Volt Switch when matchup is unfavorable
+  // ═══════════════════════════════════════
+  if (!battleState.isTrapped() && switchOptions.length > 0) {
+    const pivotMove = availableMoves.find(m => PIVOT_MOVES.has(toId(m.id)));
+    if (pivotMove) {
+      const bestOppDmg = matchup.oppAttacking[0]?.maxPercent || 0;
+      const bestMyDmg = matchup.myAttacking[0]?.maxPercent || 0;
+      // Pivot if matchup is unfavorable but not immediately lethal
+      if (bestOppDmg > 35 && bestMyDmg < 40 && myActive.hpPercent > 30) {
+        const moveIdx = findMoveIndex(availableMoves, pivotMove.id);
+        if (moveIdx !== -1) {
+          logDebug(`Heuristic: Pivot with ${pivotMove.id}`);
+          return {
+            type: 'move',
+            choice: pivotMove.id,
+            moveIndex: moveIdx + 1,
+            source: 'heuristic',
+            confidence: 0.72,
+            reasoning: `Pivot with ${pivotMove.id} — unfavorable matchup, gain momentum`,
+          };
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════
+  // 8b. Best available move (high confidence matchup)
   // ═══════════════════════════════════════
   if (matchup.myAttacking.length > 0) {
     const bestMove = matchup.myAttacking[0];
@@ -320,6 +394,48 @@ function pickBestSwitch(
     confidence: 0.75,
     reasoning: `Best switch-in: ${best.pokemon.name} (score ${best.score.toFixed(2)})`,
   };
+}
+
+/**
+ * Check if hazards on our side threaten our win condition or key bench Pokemon.
+ * Returns true only when hazards meaningfully impact our game plan.
+ */
+function hazardsThreatenTeam(state: BattleStateSnapshot, strategic: StrategicState): boolean {
+  const hazards = state.mySide.sideConditions;
+  if (hazards.size === 0) return false;
+
+  const hasRocks = hazards.has('stealthrock');
+  const spikeLayers = hazards.get('spikes') || 0;
+  const tSpikeLayers = hazards.get('toxicspikes') || 0;
+
+  const benchPokemon = state.mySide.pokemon.filter(p => !p.fainted && !p.active);
+  if (benchPokemon.length === 0) return false;
+
+  // If win condition needs to switch in and hazards would hurt it
+  const topWinCond = strategic.winConditions.length > 0 ? strategic.winConditions[0] : null;
+  if (topWinCond) {
+    const wcPoke = benchPokemon.find(p => p.name === topWinCond.pokemon);
+    if (wcPoke) {
+      const estimatedChip = (hasRocks ? 12.5 : 0) + (spikeLayers * 8.3);
+      if (wcPoke.hpPercent - estimatedChip < 60) return true;
+    }
+  }
+
+  // Hazards matter if multiple bench Pokemon take significant chip
+  let threatenedCount = 0;
+  for (const p of benchPokemon) {
+    const chipEstimate = (hasRocks ? 12.5 : 0) + (spikeLayers * 8.3);
+    if (chipEstimate > 10 && p.hpPercent < 70) threatenedCount++;
+  }
+  if (threatenedCount >= 2) return true;
+
+  // Toxic Spikes threatening key unstatused Pokemon
+  if (tSpikeLayers > 0) {
+    const unPoisoned = benchPokemon.filter(p => p.status === null);
+    if (unPoisoned.length >= 2) return true;
+  }
+
+  return false;
 }
 
 function shouldConsiderSwitching(

@@ -35,12 +35,21 @@ export class ClaudeEngine {
 
     try {
       logDebug('Calling Claude for decision...');
-      const response = await this.client.messages.create({
+
+      // Race the API call against an 8-second timeout to avoid exceeding the turn timer
+      const apiCall = this.client.messages.create({
         model: CONFIG.claude.model,
         max_tokens: CONFIG.claude.maxTokens,
         system: 'You are a competitive Pokemon battle AI. Respond with EXACTLY one line: either "MOVE: movename" or "SWITCH: pokemonname". No explanations.',
         messages: [{ role: 'user', content: prompt }],
       });
+      const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000));
+      const response = await Promise.race([apiCall, timeout]);
+
+      if (!response) {
+        logError('Claude API call timed out (8s), falling back to heuristics');
+        return null;
+      }
 
       const text = response.content[0]?.type === 'text'
         ? response.content[0].text.trim()
@@ -131,6 +140,12 @@ export class ClaudeEngine {
         const status = p.status ? ` [${p.status}]` : '';
         lines.push(`  ${p.name} (${p.hpPercent.toFixed(0)}%${status})`);
       }
+    }
+
+    // Sack order (so Claude knows which Pokemon to preserve)
+    if (strategic.sackOrder.length > 1) {
+      lines.push('Sack Priority (sacrifice first → preserve):');
+      lines.push(`  ${strategic.sackOrder.map(s => `${s.pokemon}(${s.preservationScore.toFixed(2)})`).join(' → ')}`);
     }
 
     // Field conditions

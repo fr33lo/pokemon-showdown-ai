@@ -25,6 +25,7 @@ export class BattleOrchestrator {
   private logger: BattleLogger;
   private pendingDecision: boolean = false;
   private turnProcessed: number = -1;
+  private lastRequestId: number = -1;
 
   constructor(
     battleId: string,
@@ -75,9 +76,11 @@ export class BattleOrchestrator {
       return;
     }
 
-    // Avoid processing the same turn twice
+    // Avoid processing the same request twice (rqid is unique per request)
     const currentTurn = this.state.getTurn();
+    const rqid = request.rqid || 0;
     if (this.pendingDecision) return;
+    if (rqid > 0 && rqid <= this.lastRequestId) return;
 
     // Check if we need to act (force switch or regular turn)
     const needsAction = this.state.isForceSwitch() ||
@@ -89,6 +92,7 @@ export class BattleOrchestrator {
     try {
       await this.makeTurnDecision();
       this.turnProcessed = currentTurn;
+      this.lastRequestId = rqid;
     } catch (e) {
       logError('Error in turn decision', e);
       this.fallbackAction();
@@ -121,6 +125,22 @@ export class BattleOrchestrator {
 
     // Step 2: Update inference engine
     this.inference.update(snapshot);
+
+    // Process special inference observations (Life Orb recoil, hazard immunity)
+    const dmgSrc = this.state.getLastDamageSource();
+    if (dmgSrc) {
+      const itemId = dmgSrc.item.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (itemId === 'lifeorb' && dmgSrc.player !== this.state.getMyPlayer()) {
+        const oppActive = snapshot.opponentSide.activePokemon;
+        if (oppActive) this.inference.observeRecoil(oppActive.species);
+      }
+    }
+
+    // Heavy-Duty Boots inference: opponent switched in over hazards without chip
+    const hazardCheck = this.state.consumeHazardCheck();
+    if (hazardCheck && !hazardCheck.tookDamage) {
+      this.inference.observeNoHazardDamage(hazardCheck.species);
+    }
 
     // Step 3: Calculate damage matchups
     const inferredMoves = this.inference.getActiveOpponentMoves(snapshot);
@@ -170,12 +190,12 @@ export class BattleOrchestrator {
   private executeDecision(decision: Decision): void {
     log(`[Turn ${this.state.getTurn()}] ${decision.source}: ${decision.type} ${decision.choice}`);
 
-    if (decision.type === 'move' && decision.moveIndex) {
+    if (decision.type === 'move' && decision.moveIndex != null && decision.moveIndex > 0) {
       let extra = '';
       if (decision.terastallize) extra = 'terastallize';
       else if (decision.mega) extra = 'mega';
       this.client.chooseMove(this.battleId, decision.moveIndex, extra || undefined);
-    } else if (decision.type === 'switch' && decision.switchIndex) {
+    } else if (decision.type === 'switch' && decision.switchIndex != null && decision.switchIndex > 0) {
       this.client.chooseSwitch(this.battleId, decision.switchIndex);
     } else {
       logError(`Invalid decision: ${JSON.stringify(decision)}`);
