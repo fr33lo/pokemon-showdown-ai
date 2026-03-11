@@ -20,6 +20,11 @@ export class InferenceEngine {
     this.db = new SetsDatabase();
   }
 
+  /** Initialize the sets database (fetch remote data if needed) */
+  async initialize(): Promise<void> {
+    await this.db.initialize();
+  }
+
   /** Get or create a tracker for an opponent Pokemon */
   private getTracker(pokemon: PokemonState): PokemonTracker {
     const id = toId(pokemon.species);

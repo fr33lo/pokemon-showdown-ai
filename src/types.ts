@@ -194,6 +194,7 @@ export interface StrategicState {
   threats: ThreatAssessment[];
   position: PositionEvaluation;
   sackOrder: SackOrderEntry[];
+  opponentIsStall: boolean;
 }
 
 // ============================================================

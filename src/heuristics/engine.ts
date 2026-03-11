@@ -46,6 +46,13 @@ export function heuristicDecision(
   if (!myActive || !oppActive) return null;
 
   // ═══════════════════════════════════════
+  // 0. Endgame 1v1 mode — skip win condition logic when both sides have 1 Pokemon
+  // ═══════════════════════════════════════
+  const myAlive = state.mySide.pokemon.filter(p => !p.fainted);
+  const oppAlive = state.opponentSide.pokemon.filter(p => !p.fainted);
+  const is1v1 = myAlive.length === 1 && oppAlive.length <= 1;
+
+  // ═══════════════════════════════════════
   // 1. Force Switch — pick best switch-in
   // ═══════════════════════════════════════
   if (battleState.isForceSwitch()) {
@@ -53,12 +60,21 @@ export function heuristicDecision(
   }
 
   // ═══════════════════════════════════════
-  // 2. Speed check for KO interactions
+  // 1b. Filter out unavailable moves (Encore, Taunt, Disable)
+  // ═══════════════════════════════════════
+  const isEncored = myActive.volatiles.has('encore');
+  const isTaunted = myActive.volatiles.has('taunt');
+  // If Encored, only the locked move is available; if Taunted, status moves are filtered by PS
+  // The server's |request| already accounts for disabled moves, but double-check here
+  const effectiveMoves = availableMoves.filter(m => !m.disabled && m.pp > 0);
+
+  // ═══════════════════════════════════════
+  // 2. Speed check for KO interactions (probabilistic for ties)
   // ═══════════════════════════════════════
   const oppSideId = state.myPlayer === 'p1' ? 'p2' as const : 'p1' as const;
-  const mySpeed = calc.getEffectiveSpeed(myActive, state.field, state.myPlayer);
-  const oppSpeed = calc.getEffectiveSpeed(oppActive, state.field, oppSideId);
-  const iOutspeed = mySpeed > oppSpeed;
+  const outspeedProb = calc.getOutspeedProbability(myActive, oppActive, state.field, state.myPlayer);
+  const iOutspeed = outspeedProb >= 0.5; // Treat ties as coinflip — prefer aggressive play
+  const isSpeedTie = outspeedProb === 0.5;
 
   // ═══════════════════════════════════════
   // 3. Priority KO (always check first — bypasses speed)
@@ -86,22 +102,28 @@ export function heuristicDecision(
 
   // ═══════════════════════════════════════
   // 4. Guaranteed OHKO (with speed awareness)
+  // Substitute check: if opponent has a sub, KO calcs target the sub, not the mon
   // ═══════════════════════════════════════
-  const guaranteedKO = matchup.myAttacking.find(d => d.isOHKO);
+  const oppHasSub = oppActive.volatiles.has('substitute');
+  const guaranteedKO = oppHasSub ? undefined : matchup.myAttacking.find(d => d.isOHKO);
   if (guaranteedKO) {
-    const theyCanKOFirst = !iOutspeed && matchup.oppAttacking.some(d => d.isOHKO);
+    const oppCanKO = matchup.oppAttacking.some(d => d.isOHKO);
+    const theyCanKOFirst = !iOutspeed && oppCanKO;
+    // On speed tie: both can KO → 50/50 coinflip → still go for KO (better than switching)
+    const speedTieMutualKO = isSpeedTie && oppCanKO;
     if (!theyCanKOFirst) {
-      // Safe to attack — we outspeed or they can't KO us
+      const confidence = speedTieMutualKO ? 0.75 : 0.95; // Lower confidence on speed tie
       const moveIdx = findMoveIndex(availableMoves, guaranteedKO.move);
       if (moveIdx !== -1) {
-        logDebug(`Heuristic: Guaranteed KO with ${guaranteedKO.move}`);
+        const tieNote = speedTieMutualKO ? ' (speed tie — 50/50)' : '';
+        logDebug(`Heuristic: Guaranteed KO with ${guaranteedKO.move}${tieNote}`);
         return {
           type: 'move',
           choice: guaranteedKO.move,
           moveIndex: moveIdx + 1,
           source: 'heuristic',
-          confidence: 0.95,
-          reasoning: `Guaranteed OHKO with ${guaranteedKO.move} (${guaranteedKO.minPercent.toFixed(0)}-${guaranteedKO.maxPercent.toFixed(0)}%)`,
+          confidence,
+          reasoning: `Guaranteed OHKO with ${guaranteedKO.move} (${guaranteedKO.minPercent.toFixed(0)}-${guaranteedKO.maxPercent.toFixed(0)}%)${tieNote}`,
         };
       }
     } else {
@@ -179,6 +201,44 @@ export function heuristicDecision(
             };
           }
         }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════
+  // 5b. Anti-stall: prioritize Taunt and setup when opponent is stall
+  // ═══════════════════════════════════════
+  if (strategic.opponentIsStall && myActive.hpPercent > 50) {
+    // Taunt shuts down passive play
+    const tauntMove = availableMoves.find(m => toId(m.id) === 'taunt' && !m.disabled && m.pp > 0);
+    if (tauntMove && !oppActive.volatiles.has('taunt')) {
+      const moveIdx = findMoveIndex(availableMoves, tauntMove.id);
+      if (moveIdx !== -1) {
+        logDebug('Heuristic: Anti-stall Taunt');
+        return {
+          type: 'move',
+          choice: tauntMove.id,
+          moveIndex: moveIdx + 1,
+          source: 'heuristic',
+          confidence: 0.82,
+          reasoning: 'Anti-stall: Taunt to shut down passive play',
+        };
+      }
+    }
+    // Setup is high-value against stall — force them to react
+    const antiStallSetup = availableMoves.find(m => SETUP_MOVES.has(toId(m.id)) && !m.disabled && m.pp > 0);
+    if (antiStallSetup && matchup.oppAttacking[0]?.maxPercent < 40) {
+      const moveIdx = findMoveIndex(availableMoves, antiStallSetup.id);
+      if (moveIdx !== -1) {
+        logDebug('Heuristic: Anti-stall setup');
+        return {
+          type: 'move',
+          choice: antiStallSetup.id,
+          moveIndex: moveIdx + 1,
+          source: 'heuristic',
+          confidence: 0.78,
+          reasoning: 'Anti-stall: setup to break through walls',
+        };
       }
     }
   }
@@ -301,9 +361,29 @@ export function heuristicDecision(
   }
 
   // ═══════════════════════════════════════
-  // 9. Bad matchup — consider switching
+  // 9. Endgame 1v1 — purely calculate best move, no switching logic
   // ═══════════════════════════════════════
-  if (!battleState.isTrapped() && switchOptions.length > 0) {
+  if (is1v1 && matchup.myAttacking.length > 0) {
+    // In 1v1, just pick the highest damage move. No win condition preservation.
+    const bestMove = matchup.myAttacking[0];
+    const moveIdx = findMoveIndex(availableMoves, bestMove.move);
+    if (moveIdx !== -1) {
+      logDebug(`Heuristic: 1v1 endgame — best move ${bestMove.move}`);
+      return {
+        type: 'move',
+        choice: bestMove.move,
+        moveIndex: moveIdx + 1,
+        source: 'heuristic',
+        confidence: 0.90,
+        reasoning: `1v1 endgame: ${bestMove.move} (${bestMove.minPercent.toFixed(0)}-${bestMove.maxPercent.toFixed(0)}%)`,
+      };
+    }
+  }
+
+  // ═══════════════════════════════════════
+  // 10. Bad matchup — consider switching (skip in 1v1)
+  // ═══════════════════════════════════════
+  if (!is1v1 && !battleState.isTrapped() && switchOptions.length > 0) {
     const bestOppDmg = matchup.oppAttacking[0]?.maxPercent || 0;
     const bestMyDmg = matchup.myAttacking[0]?.maxPercent || 0;
 

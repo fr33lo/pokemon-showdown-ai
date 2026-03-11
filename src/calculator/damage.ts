@@ -20,7 +20,19 @@ const PRIORITY_MAP: Record<string, number> = {
   accelerock: 1, aquajet: 1, bulletpunch: 1, iceshard: 1,
   machpunch: 1, quickattack: 1, shadowsneak: 1,
   suckerpunch: 1, grassyglide: 1, jetpunch: 1,
+  protect: 4, detect: 4, kingsshield: 4, spikyshield: 4, banefulbunker: 4, silktrap: 4,
 };
+
+// Prankster gives +1 priority to status moves (category 'status')
+// We track these separately since Prankster is ability-dependent
+const PRANKSTER_STATUS_CATEGORY = new Set([
+  'thunderwave', 'willowisp', 'toxic', 'taunt', 'encore', 'substitute',
+  'leechseed', 'whirlwind', 'roar', 'haze', 'reflect', 'lightscreen',
+  'stealthrock', 'spikes', 'toxicspikes', 'defog', 'swordsdance', 'nastyplot',
+  'calmmind', 'tailwind', 'trickroom', 'wish', 'recover', 'roost',
+  'sleeppowder', 'spore', 'stunspore', 'glare', 'yawn', 'partingshot',
+  'teleport', 'copycat', 'memento',
+]);
 
 // ============================================================
 // Damage Calculator with Cache
@@ -57,7 +69,8 @@ export class DamageCalculator {
       const calcField = this.toField(field);
 
       const result = calculate(this.gen, calcAttacker, calcDefender, calcMove, calcField);
-      const damageResult = this.parseResult(result, moveId, attacker.name, defender.name);
+      const atkAbility = attacker.knownAbility || attacker.ability;
+      const damageResult = this.parseResult(result, moveId, attacker.name, defender.name, atkAbility);
 
       this.addToCache(cacheKey, damageResult);
       return damageResult;
@@ -240,7 +253,7 @@ export class DamageCalculator {
   // Result parsing
   // ────────────────────────────────────────
 
-  private parseResult(result: Result, moveId: string, attacker: string, defender: string): DamageResult {
+  private parseResult(result: Result, moveId: string, attacker: string, defender: string, attackerAbility?: string): DamageResult {
     const damage = result.damage;
     let minDmg = 0;
     let maxDmg = 0;
@@ -279,8 +292,27 @@ export class DamageCalculator {
       maxPercent,
       isOHKO: minPercent >= curHpPercent,
       is2HKO: minPercent * 2 >= curHpPercent,
-      priority: PRIORITY_MAP[toId(moveId)] || 0,
+      priority: this.getMovePriority(moveId, attackerAbility),
     };
+  }
+
+  /** Get move priority, accounting for Prankster (+1 on status moves) and Stall (-6 on all moves) */
+  private getMovePriority(moveId: string, attackerAbility?: string): number {
+    const mid = toId(moveId);
+    let prio = PRIORITY_MAP[mid] || 0;
+    if (attackerAbility) {
+      const abilityId = toId(attackerAbility);
+      if (abilityId === 'prankster' && PRANKSTER_STATUS_CATEGORY.has(mid)) {
+        prio += 1; // Prankster boosts status moves by +1
+      }
+      if (abilityId === 'stall') {
+        prio = -6; // Stall makes the user move last in its bracket
+      }
+      if (abilityId === 'galewings' && mid === 'bravebird') {
+        prio += 1; // Gale Wings +1 to Flying moves at full HP (simplified)
+      }
+    }
+    return prio;
   }
 
   private fallbackResult(moveId: string, attacker: string, defender: string): DamageResult {
@@ -337,20 +369,38 @@ export class DamageCalculator {
   getEffectiveSpeed(pokemon: PokemonState, field: FieldState, playerSide: 'p1' | 'p2'): number {
     let speed = pokemon.stats.spe || 100;
 
-    // Apply boost multiplier
+    // Apply boost multiplier (Gen 5+ formula)
     const boost = pokemon.boosts.spe;
     if (boost > 0) speed = Math.floor(speed * (2 + boost) / 2);
     else if (boost < 0) speed = Math.floor(speed * 2 / (2 - boost));
 
-    // Paralysis halves speed
+    // Paralysis halves speed (Gen 7+: 50%)
     if (pokemon.status === 'par') speed = Math.floor(speed * 0.5);
 
     // Tailwind doubles speed
-    if (field.tailwind[playerSide] > 0) speed *= 2;
+    if (field.tailwind[playerSide] > 0) speed = Math.floor(speed * 2);
 
-    // Trick Room inverts speed
-    if (field.trickRoom) speed = -speed;
+    // Trick Room inverts speed — use a large constant minus speed to keep ordering correct
+    // This preserves speed tie detection (equal values remain equal)
+    if (field.trickRoom) speed = 10000 - speed;
 
     return speed;
+  }
+
+  /**
+   * Compare speeds and return probability of outspeeding.
+   * Returns 1.0 if we definitely outspeed, 0.0 if we definitely don't,
+   * and 0.5 for speed ties (random coin flip on PS).
+   */
+  getOutspeedProbability(
+    myPoke: PokemonState, oppPoke: PokemonState,
+    field: FieldState, myPlayer: 'p1' | 'p2'
+  ): number {
+    const oppSide = myPlayer === 'p1' ? 'p2' as const : 'p1' as const;
+    const mySpeed = this.getEffectiveSpeed(myPoke, field, myPlayer);
+    const oppSpeed = this.getEffectiveSpeed(oppPoke, field, oppSide);
+    if (mySpeed > oppSpeed) return 1.0;
+    if (mySpeed === oppSpeed) return 0.5; // Speed tie — 50/50 coinflip
+    return 0.0;
   }
 }

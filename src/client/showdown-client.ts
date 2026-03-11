@@ -23,6 +23,11 @@ export class ShowdownClient extends EventEmitter {
   private activeBattleId: string | null = null;
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
+  private keepaliveInterval: ReturnType<typeof setInterval> | null = null;
+  // Rate limiting: PS allows ~40 commands per 30 seconds
+  private commandTimestamps: number[] = [];
+  private readonly RATE_LIMIT_WINDOW = 30000; // 30s
+  private readonly RATE_LIMIT_MAX = 35; // Leave buffer below 40
 
   constructor() {
     super();
@@ -45,6 +50,7 @@ export class ShowdownClient extends EventEmitter {
       this.ws.on('open', () => {
         log('WebSocket connected');
         this.reconnectAttempts = 0;
+        this.startKeepalive();
         resolve();
       });
 
@@ -56,6 +62,7 @@ export class ShowdownClient extends EventEmitter {
       this.ws.on('close', () => {
         log('WebSocket disconnected');
         this.loggedIn = false;
+        this.stopKeepalive();
         this.emit('disconnect');
         this.attemptReconnect();
       });
@@ -87,6 +94,7 @@ export class ShowdownClient extends EventEmitter {
   }
 
   disconnect(): void {
+    this.stopKeepalive();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -253,8 +261,37 @@ export class ShowdownClient extends EventEmitter {
       logError('Cannot send: WebSocket not connected');
       return;
     }
+
+    // Rate limiting
+    const now = Date.now();
+    this.commandTimestamps = this.commandTimestamps.filter(t => now - t < this.RATE_LIMIT_WINDOW);
+    if (this.commandTimestamps.length >= this.RATE_LIMIT_MAX) {
+      logDebug(`Rate limited, queuing message: ${message.substring(0, 50)}`);
+      setTimeout(() => this.send(message), 1000);
+      return;
+    }
+    this.commandTimestamps.push(now);
+
     logDebug(`>>> ${message}`);
     this.ws.send(message);
+  }
+
+  /** Start keepalive pings every 30 seconds to prevent heartbeat timeout */
+  startKeepalive(): void {
+    this.stopKeepalive();
+    this.keepaliveInterval = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.send('|/ping');
+      }
+    }, 30000);
+  }
+
+  /** Stop keepalive pings */
+  stopKeepalive(): void {
+    if (this.keepaliveInterval) {
+      clearInterval(this.keepaliveInterval);
+      this.keepaliveInterval = null;
+    }
   }
 
   searchBattle(): void {

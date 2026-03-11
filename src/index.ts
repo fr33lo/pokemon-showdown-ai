@@ -51,6 +51,9 @@ class PokemonShowdownAI {
 
     this.running = true;
 
+    // Initialize inference engine (fetch remote sets data if cache is stale)
+    await this.inference.initialize();
+
     // Set up event handlers
     this.setupEventHandlers();
 

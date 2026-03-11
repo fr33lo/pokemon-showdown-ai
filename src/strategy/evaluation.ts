@@ -22,7 +22,26 @@ export function evaluateStrategicState(
   const position = evaluatePosition(state, battleState, calc, winConditions);
   const sackOrder = calculateSackOrder(state, calc, winConditions, threats);
 
-  return { winConditions, threats, position, sackOrder };
+  // Stall detection: check if opponent's threat profile is wall-heavy
+  const opponentIsStall = detectStall(threats);
+
+  return { winConditions, threats, position, sackOrder, opponentIsStall };
+}
+
+/**
+ * Detect if the opponent is running a stall team.
+ * Stall teams have high defensiveWallValue and low damageThreat across most Pokemon.
+ */
+function detectStall(threats: import('../types').ThreatAssessment[]): boolean {
+  if (threats.length < 3) return false;
+  let wallCount = 0;
+  for (const t of threats) {
+    if (t.defensiveWallValue > 0.4 && t.damageThreat < 0.3) {
+      wallCount++;
+    }
+  }
+  // If 3+ opponent Pokemon are walls with low damage, it's stall
+  return wallCount >= 3;
 }
 
 /**

@@ -165,7 +165,29 @@ export class ClaudeEngine {
       for (const f of fieldInfo) lines.push(`  ${f}`);
     }
 
-    return lines.join('\n');
+    let prompt = lines.join('\n');
+
+    // Token compression: cap prompt at ~1500 tokens (~6000 chars) to prevent overflow
+    // Always keep current-turn critical data; truncate older/less-essential context
+    const MAX_CHARS = 6000;
+    if (prompt.length > MAX_CHARS) {
+      logDebug(`Claude prompt too long (${prompt.length} chars), compressing...`);
+      // Keep the first section (active Pokemon + turn info) and last section (moves + switches)
+      const criticalEnd = prompt.lastIndexOf('Available Moves:');
+      const criticalStart = Math.min(1200, prompt.indexOf('My damage to opponent:'));
+      if (criticalEnd > 0 && criticalStart > 0) {
+        const head = prompt.substring(0, criticalStart);
+        const tail = prompt.substring(criticalEnd);
+        const budget = MAX_CHARS - head.length - tail.length - 30;
+        const middle = prompt.substring(criticalStart, criticalEnd);
+        const truncatedMiddle = budget > 100 ? middle.substring(0, budget) + '\n...\n' : '';
+        prompt = head + truncatedMiddle + tail;
+      } else {
+        prompt = prompt.substring(0, MAX_CHARS);
+      }
+    }
+
+    return prompt;
   }
 
   private parseResponse(

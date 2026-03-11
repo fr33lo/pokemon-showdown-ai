@@ -4,6 +4,7 @@ import { DamageCalculator } from '../calculator/damage';
 import { InferenceEngine } from '../inference/engine';
 import { evaluateStrategicState } from '../strategy/evaluation';
 import { heuristicDecision } from '../heuristics/engine';
+import { evaluateTera } from '../strategy/tera';
 import { ClaudeEngine } from '../ai/claude';
 import { BattleLogger, log, logError, logDebug } from '../logging/logger';
 import { turnDelay, maybeImperfectPlay } from '../behavior/human-like';
@@ -26,6 +27,7 @@ export class BattleOrchestrator {
   private pendingDecision: boolean = false;
   private turnProcessed: number = -1;
   private lastRequestId: number = -1;
+  private consecutiveFailures: number = 0; // Circuit breaker for forfeit
 
   constructor(
     battleId: string,
@@ -167,6 +169,30 @@ export class BattleOrchestrator {
     // Step 7: Final fallback — pick highest damage move
     if (!decision) {
       decision = this.emergencyFallback(availableMoves, switchOptions, snapshot);
+    }
+
+    // Step 7b: Circuit breaker — if we failed to find a good decision 3x in a row, forfeit
+    if (!decision || (decision.source === 'random' && decision.confidence <= 0.1)) {
+      this.consecutiveFailures++;
+      if (this.consecutiveFailures >= 3) {
+        logError(`Circuit breaker: ${this.consecutiveFailures} consecutive decision failures, forfeiting`);
+        this.client.sendBattleCommand(this.battleId, '/forfeit');
+        return;
+      }
+    } else {
+      this.consecutiveFailures = 0;
+    }
+
+    // Step 7c: Tera evaluation — should we Terastallize this turn?
+    if (decision.type === 'move' && !decision.terastallize) {
+      const teraType = this.state.canTerastallize();
+      if (teraType) {
+        const teraEval = evaluateTera(snapshot, strategic, matchup, availableMoves, this.calc, teraType);
+        if (teraEval.verdict === 'TERA_NOW') {
+          decision = { ...decision, terastallize: true };
+          logDebug(`Tera decision: ${teraEval.reasoning}`);
+        }
+      }
     }
 
     // Apply imperfect play (human-like)
