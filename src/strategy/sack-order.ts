@@ -107,5 +107,20 @@ export function calculateSackOrder(
   }
 
   // Sort by preservationScore ascending (best sack candidate first)
-  return entries.sort((a, b) => a.preservationScore - b.preservationScore);
+  entries.sort((a, b) => a.preservationScore - b.preservationScore);
+
+  // Hard guard: the top win condition must NEVER be first in sack order
+  // unless it is literally the last Pokemon alive
+  if (winConditions.length > 0 && entries.length > 1) {
+    const topWC = winConditions[0].pokemon;
+    const wcIdx = entries.findIndex(e => e.pokemon === topWC);
+    if (wcIdx === 0) {
+      // Move win condition to at least second-to-last position
+      const [wc] = entries.splice(wcIdx, 1);
+      const insertAt = Math.max(entries.length - 1, 0);
+      entries.splice(insertAt, 0, wc);
+    }
+  }
+
+  return entries;
 }

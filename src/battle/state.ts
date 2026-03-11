@@ -360,6 +360,33 @@ export class BattleState {
     pokemon.volatiles = new Set();
 
     side.activePokemon = pokemon;
+
+    // Track opponent switch-ins over hazards for HDB inference
+    if (player !== this.myPlayer) {
+      const oppHazards = this.getSide(player === 'p1' ? 'p1' : 'p2').sideConditions;
+      if (oppHazards.size > 0) {
+        // Record the species that switched in — if no damage event follows,
+        // the orchestrator can call observeNoHazardDamage
+        this.pendingHazardCheck = { player, species: speciesId, hpAtEntry: cond.hp };
+      }
+    }
+  }
+
+  /** Pending hazard check for HDB inference */
+  private pendingHazardCheck: { player: 'p1' | 'p2'; species: string; hpAtEntry: number } | null = null;
+
+  /** Consume and return pending hazard check (orchestrator calls after processing messages) */
+  consumeHazardCheck(): { species: string; tookDamage: boolean } | null {
+    const check = this.pendingHazardCheck;
+    if (!check) return null;
+    this.pendingHazardCheck = null;
+    // Compare entry HP with current HP — if unchanged, no hazard damage
+    const side = this.getSide(check.player);
+    const pokemon = side.activePokemon;
+    if (pokemon && pokemon.species === check.species) {
+      return { species: check.species, tookDamage: pokemon.hp < check.hpAtEntry };
+    }
+    return null;
   }
 
   private handleMove(args: string[]): void {

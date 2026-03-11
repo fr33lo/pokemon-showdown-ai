@@ -85,7 +85,11 @@ export class BattleLogger {
       return value;
     }));
 
-    fs.writeFileSync(filepath, JSON.stringify(serializable, null, 2));
+    const data = JSON.stringify(serializable, null, 2);
+    // Write asynchronously to avoid blocking the decision loop
+    fs.writeFile(filepath, data, (err) => {
+      if (err) console.error(`Failed to write battle log: ${err.message}`);
+    });
     return filepath;
   }
 

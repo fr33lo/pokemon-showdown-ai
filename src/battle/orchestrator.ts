@@ -126,6 +126,22 @@ export class BattleOrchestrator {
     // Step 2: Update inference engine
     this.inference.update(snapshot);
 
+    // Process special inference observations (Life Orb recoil, hazard immunity)
+    const dmgSrc = this.state.getLastDamageSource();
+    if (dmgSrc) {
+      const itemId = dmgSrc.item.toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (itemId === 'lifeorb' && dmgSrc.player !== this.state.getMyPlayer()) {
+        const oppActive = snapshot.opponentSide.activePokemon;
+        if (oppActive) this.inference.observeRecoil(oppActive.species);
+      }
+    }
+
+    // Heavy-Duty Boots inference: opponent switched in over hazards without chip
+    const hazardCheck = this.state.consumeHazardCheck();
+    if (hazardCheck && !hazardCheck.tookDamage) {
+      this.inference.observeNoHazardDamage(hazardCheck.species);
+    }
+
     // Step 3: Calculate damage matchups
     const inferredMoves = this.inference.getActiveOpponentMoves(snapshot);
     const matchup = this.calc.calcMatchup(snapshot, availableMoves, inferredMoves);

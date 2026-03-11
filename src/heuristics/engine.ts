@@ -210,7 +210,7 @@ export function heuristicDecision(
   }
 
   // ═══════════════════════════════════════
-  // 7. Setup opportunity
+  // 7. Setup opportunity (recognizes safe setups: opponent locked, slower, or forced out)
   // ═══════════════════════════════════════
   const setupMove = availableMoves.find(m => SETUP_MOVES.has(toId(m.id)));
   if (setupMove && myActive.hpPercent > 60) {
@@ -218,18 +218,29 @@ export function heuristicDecision(
     const isWinCond = strategic.winConditions.length > 0 &&
       strategic.winConditions[0].pokemon === myActive.name;
 
-    // Safe to set up: opponent can't 2HKO us
-    if (worstOppDmg < 45 && isWinCond) {
+    // Detect safe setup conditions
+    const oppLocked = oppActive.volatiles.has('choicelock') ||
+      oppActive.volatiles.has('mustrecharge') ||
+      oppActive.volatiles.has('twoturnmove');
+    const oppSlower = iOutspeed;
+    const oppCantThreaten = worstOppDmg < 45;
+    const oppLowHp = oppActive.hpPercent < 25;  // They'll likely switch
+    const isSafe = oppCantThreaten || oppLocked || (oppSlower && oppLowHp);
+
+    if (isSafe && isWinCond) {
       const moveIdx = findMoveIndex(availableMoves, setupMove.id);
       if (moveIdx !== -1) {
-        logDebug(`Heuristic: Setup with ${setupMove.id}`);
+        const reason = oppLocked ? 'opponent locked' :
+          oppLowHp ? 'opponent likely switching' :
+          'opponent can\'t threaten';
+        logDebug(`Heuristic: Setup with ${setupMove.id} (${reason})`);
         return {
           type: 'move',
           choice: setupMove.id,
           moveIndex: moveIdx + 1,
           source: 'heuristic',
           confidence: 0.80,
-          reasoning: 'Safe setup opportunity for win condition',
+          reasoning: `Safe setup: ${reason}`,
         };
       }
     }
@@ -383,6 +394,48 @@ function pickBestSwitch(
     confidence: 0.75,
     reasoning: `Best switch-in: ${best.pokemon.name} (score ${best.score.toFixed(2)})`,
   };
+}
+
+/**
+ * Check if hazards on our side threaten our win condition or key bench Pokemon.
+ * Returns true only when hazards meaningfully impact our game plan.
+ */
+function hazardsThreatenTeam(state: BattleStateSnapshot, strategic: StrategicState): boolean {
+  const hazards = state.mySide.sideConditions;
+  if (hazards.size === 0) return false;
+
+  const hasRocks = hazards.has('stealthrock');
+  const spikeLayers = hazards.get('spikes') || 0;
+  const tSpikeLayers = hazards.get('toxicspikes') || 0;
+
+  const benchPokemon = state.mySide.pokemon.filter(p => !p.fainted && !p.active);
+  if (benchPokemon.length === 0) return false;
+
+  // If win condition needs to switch in and hazards would hurt it
+  const topWinCond = strategic.winConditions.length > 0 ? strategic.winConditions[0] : null;
+  if (topWinCond) {
+    const wcPoke = benchPokemon.find(p => p.name === topWinCond.pokemon);
+    if (wcPoke) {
+      const estimatedChip = (hasRocks ? 12.5 : 0) + (spikeLayers * 8.3);
+      if (wcPoke.hpPercent - estimatedChip < 60) return true;
+    }
+  }
+
+  // Hazards matter if multiple bench Pokemon take significant chip
+  let threatenedCount = 0;
+  for (const p of benchPokemon) {
+    const chipEstimate = (hasRocks ? 12.5 : 0) + (spikeLayers * 8.3);
+    if (chipEstimate > 10 && p.hpPercent < 70) threatenedCount++;
+  }
+  if (threatenedCount >= 2) return true;
+
+  // Toxic Spikes threatening key unstatused Pokemon
+  if (tSpikeLayers > 0) {
+    const unPoisoned = benchPokemon.filter(p => p.status === null);
+    if (unPoisoned.length >= 2) return true;
+  }
+
+  return false;
 }
 
 function shouldConsiderSwitching(
